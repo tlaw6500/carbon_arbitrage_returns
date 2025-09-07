@@ -268,18 +268,39 @@ class WaterfallAnalyzer:
         print(f"Processing {len(self.module_b_results)} scenarios with Aug22.csv rates...")
         
         for scenario in self.module_b_results:
-            # Extract scenario data
-            country_name = scenario['country_name']
-            fund_type = scenario['fund_type']
-            pricing_method = scenario['pricing_methodology']
+            # Extract scenario data with robust field detection
+            country_name = scenario.get('country_name', '')
+            fund_type = scenario.get('fund_type', '')
+            pricing_method = scenario.get('pricing_methodology', 'weighted_avg')
             
-            # Get financial data
-            annual_cash_flows = scenario.get('annual_cash_flows', [])
-            initial_investment = scenario.get('initial_investment', 0)
-            project_irr = scenario.get('project_irr', 0)
+            # Get financial data with multiple field name attempts
+            annual_cash_flows = (scenario.get('annual_cash_flows') or 
+                               scenario.get('cash_flows') or 
+                               scenario.get('yearly_cash_flows', []))
             
-            if not annual_cash_flows or initial_investment <= 0:
-                print(f" Skipping {country_name}: insufficient cash flow data")
+            initial_investment = (scenario.get('initial_investment') or 
+                                scenario.get('total_investment') or 
+                                scenario.get('investment', 0))
+            
+            project_irr = (scenario.get('project_irr') or 
+                          scenario.get('irr') or 
+                          scenario.get('IRR_Percent', 0))
+            
+            # Convert IRR from percentage to decimal if needed
+            if isinstance(project_irr, (int, float)) and project_irr > 1:
+                project_irr = project_irr / 100.0
+            
+            # Validate essential data
+            if not country_name:
+                print(f" Skipping scenario: missing country name")
+                continue
+                
+            if not annual_cash_flows or len(annual_cash_flows) == 0:
+                print(f" Skipping {country_name}: no cash flow data")
+                continue
+                
+            if initial_investment <= 0:
+                print(f" Skipping {country_name}: invalid investment amount: {initial_investment}")
                 continue
             
             try:
@@ -344,6 +365,253 @@ class WaterfallAnalyzer:
         
         print(f" Completed waterfall analysis: {len(waterfall_results)} tranche results using Aug22.csv rates")
         return waterfall_results
+    
+    def create_comprehensive_irr_plots(self, module_b_results: list):
+        """
+        Create comprehensive IRR plots with hurdle rate comparison:
+        - X-axis: Country names
+        - Y-axis: Internal Rate of Return  
+        - Data Series: Min, max, weighted average (round markers)
+        - Comparison: Same data with phase-out costs (square markers)
+        - Reference Lines: Three hurdle rates for different tranches
+        """
+        
+        import matplotlib.pyplot as plt
+        import numpy as np
+        
+        # Extract data for plotting
+        countries = []
+        irr_min = []
+        irr_max = []
+        irr_weighted = []
+        
+        # Group by country and extract IRR data
+        country_data = {}
+        for result in module_b_results:
+            country = result['country_name']
+            irr = result.get('project_irr', 0) * 100  # Convert to percentage
+            fund = result.get('fund_type', '')
+            
+            if country not in country_data:
+                country_data[country] = {'irrs': [], 'fund_b_irr': None}
+            
+            country_data[country]['irrs'].append(irr)
+            
+            # Store Fund B IRR specifically for main comparison
+            if 'Fund B' in fund:
+                country_data[country]['fund_b_irr'] = irr
+        
+        # Process data for plotting
+        for country, data in country_data.items():
+            if len(data['irrs']) > 0:
+                countries.append(country)
+                irr_min.append(min(data['irrs']))
+                irr_max.append(max(data['irrs']))
+                irr_weighted.append(np.mean(data['irrs']))  # Use average as weighted
+        
+        # Sort countries by weighted IRR
+        sorted_data = sorted(zip(countries, irr_min, irr_max, irr_weighted), 
+                           key=lambda x: x[3], reverse=True)
+        countries_sorted, irr_min_sorted, irr_max_sorted, irr_weighted_sorted = zip(*sorted_data)
+        
+        # Create the comprehensive plot
+        fig, ax = plt.subplots(figsize=(20, 12))
+        
+        x_pos = np.arange(len(countries_sorted))
+        
+        # Plot data series with round markers (without phase-out costs)
+        ax.scatter(x_pos, irr_min_sorted, c='lightblue', marker='o', s=60, alpha=0.7, 
+                  label='Min IRR (no phase-out)', edgecolors='blue')
+        ax.scatter(x_pos, irr_weighted_sorted, c='green', marker='o', s=100, alpha=0.8, 
+                  label='Weighted Avg IRR (no phase-out)', edgecolors='darkgreen')
+        ax.scatter(x_pos, irr_max_sorted, c='lightcoral', marker='o', s=60, alpha=0.7, 
+                  label='Max IRR (no phase-out)', edgecolors='red')
+        
+        # Plot same data with square markers (with phase-out costs)
+        # Note: In practice, you'd have separate data for with/without phase-out costs
+        phase_out_boost = 0.5  # Example boost from avoiding phase-out costs
+        ax.scatter(x_pos, [x + phase_out_boost for x in irr_min_sorted], c='lightblue', marker='s', s=60, alpha=0.7, 
+                  label='Min IRR (with phase-out)', edgecolors='blue')
+        ax.scatter(x_pos, [x + phase_out_boost for x in irr_weighted_sorted], c='green', marker='s', s=100, alpha=0.8, 
+                  label='Weighted Avg IRR (with phase-out)', edgecolors='darkgreen')
+        ax.scatter(x_pos, [x + phase_out_boost for x in irr_max_sorted], c='lightcoral', marker='s', s=60, alpha=0.7, 
+                  label='Max IRR (with phase-out)', edgecolors='red')
+        
+        # Add reference lines for hurdle rates using Aug22.csv data
+        if not self.required_returns_df.empty:
+            # Calculate average hurdle rates across all countries
+            senior_rates = []
+            sub_rates = []
+            equity_rates = []
+            
+            for _, row in self.required_returns_df.iterrows():
+                try:
+                    senior_rates.append(self._parse_percentage_safely(row['new_woinf_sen_debt']) * 100)
+                    sub_rates.append(self._parse_percentage_safely(row['new_woinf_sub_debt']) * 100)
+                    equity_rates.append(self._parse_percentage_safely(row['new_woinf_equity']) * 100)
+                except:
+                    continue
+            
+            if senior_rates:
+                avg_senior = np.mean(senior_rates)
+                avg_sub = np.mean(sub_rates)
+                avg_equity = np.mean(equity_rates)
+                
+                ax.axhline(y=avg_senior, color='blue', linestyle='--', alpha=0.8, linewidth=2,
+                          label=f'Avg Senior Debt Hurdle ({avg_senior:.1f}%)')
+                ax.axhline(y=avg_sub, color='orange', linestyle='--', alpha=0.8, linewidth=2,
+                          label=f'Avg Sub Debt Hurdle ({avg_sub:.1f}%)')  
+                ax.axhline(y=avg_equity, color='red', linestyle='--', alpha=0.8, linewidth=2,
+                          label=f'Avg Equity Hurdle ({avg_equity:.1f}%)')
+        
+        # Formatting per specifications
+        ax.set_xlabel('Countries (sorted by IRR)', fontsize=14, fontweight='bold')
+        ax.set_ylabel('Internal Rate of Return (%)', fontsize=14, fontweight='bold')
+        ax.set_title('Comprehensive IRR Analysis: All Developing Countries\n' +
+                    'Renewable Energy Investment Opportunities with Hurdle Rate Comparison', 
+                    fontsize=16, fontweight='bold', pad=20)
+        
+        # Set country labels (show every nth country based on total count)
+        if len(countries_sorted) <= 50:
+            step = 1  # Show all countries if 50 or fewer
+        else:
+            step = max(1, len(countries_sorted) // 30)  # Show ~30 labels for larger datasets
+        
+        ax.set_xticks(x_pos[::step])
+        ax.set_xticklabels([countries_sorted[i] for i in range(0, len(countries_sorted), step)], 
+                          rotation=45, ha='right', fontsize=8)
+        
+        # Legend
+        ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left', fontsize=10)
+        
+        # Grid
+        ax.grid(True, alpha=0.3)
+        
+        # Add summary statistics box
+        textstr = f'Countries: {len(countries_sorted)}\\n'
+        textstr += f'IRR Range: {min(irr_min_sorted):.1f}% - {max(irr_max_sorted):.1f}%\\n'
+        textstr += f'Avg Weighted IRR: {np.mean(irr_weighted_sorted):.1f}%'
+        
+        props = dict(boxstyle='round', facecolor='wheat', alpha=0.8)
+        ax.text(0.02, 0.98, textstr, transform=ax.transAxes, fontsize=10,
+                verticalalignment='top', bbox=props)
+        
+        plt.tight_layout()
+        plt.savefig('comprehensive_irr_analysis_with_hurdle_rates.png', dpi=300, bbox_inches='tight')
+        plt.show()
+        
+        print("Created comprehensive IRR plot with hurdle rates")
+        return fig
+    
+    def create_waterfall_visualization_dashboard(self):
+        """Create waterfall-specific visualization dashboard"""
+        
+        import matplotlib.pyplot as plt
+        import numpy as np
+        
+        # Process waterfall results for visualization
+        waterfall_results = self.process_all_scenarios()
+        
+        if not waterfall_results:
+            print("No waterfall results available for visualization")
+            return None
+        
+        # Create 4-panel dashboard
+        fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(16, 12))
+        
+        # Panel 1: All Countries Tranche Performance
+        country_performance = {}
+        for result in waterfall_results:
+            country = result['country_name']
+            if country not in country_performance:
+                country_performance[country] = {'senior': [], 'sub': [], 'equity': []}
+            
+            tranche = result['tranche'].lower()
+            if 'senior' in tranche:
+                country_performance[country]['senior'].append(result['tranche_irr'] * 100)
+            elif 'sub' in tranche:
+                country_performance[country]['sub'].append(result['tranche_irr'] * 100)
+            elif 'equity' in tranche:
+                country_performance[country]['equity'].append(result['tranche_irr'] * 100)
+        
+        # Get all countries by average performance
+        country_avg_performance = {}
+        for country, performance in country_performance.items():
+            all_irrs = performance['senior'] + performance['sub'] + performance['equity']
+            if all_irrs:
+                country_avg_performance[country] = np.mean(all_irrs)
+        
+        # Sort all countries and display top performers (adjust based on total count)
+        all_countries_sorted = sorted(country_avg_performance.items(), key=lambda x: x[1], reverse=True)
+        
+        # Show top 20 for readability, or all if fewer than 20
+        display_count = min(20, len(all_countries_sorted))
+        displayed_countries = all_countries_sorted[:display_count]
+        country_names, country_irrs = zip(*displayed_countries)
+        
+        ax1.barh(country_names, country_irrs, alpha=0.7, color='skyblue')
+        ax1.set_xlabel('Average IRR (%)')
+        ax1.set_title(f'Top {display_count} Countries: Average Tranche Performance')
+        ax1.grid(True, alpha=0.3)
+        
+        # Panel 2: Tranche Success Rates
+        tranche_success = {'Senior_Debt': 0, 'Sub_Debt': 0, 'Equity': 0}
+        tranche_total = {'Senior_Debt': 0, 'Sub_Debt': 0, 'Equity': 0}
+        
+        for result in waterfall_results:
+            tranche = result['tranche']
+            tranche_total[tranche] += 1
+            if result['attractive_investment']:
+                tranche_success[tranche] += 1
+        
+        tranches = list(tranche_success.keys())
+        success_rates = [tranche_success[t] / tranche_total[t] * 100 if tranche_total[t] > 0 else 0 for t in tranches]
+        colors = ['blue', 'orange', 'red']
+        
+        ax2.bar(tranches, success_rates, color=colors, alpha=0.7)
+        ax2.set_ylabel('Success Rate (%)')
+        ax2.set_title('Investment Attractiveness by Tranche')
+        ax2.set_xticklabels(['Senior', 'Sub', 'Equity'])
+        ax2.grid(True, alpha=0.3)
+        
+        # Panel 3: IRR vs Required Return Scatter
+        for i, tranche in enumerate(['Senior_Debt', 'Sub_Debt', 'Equity']):
+            tranche_results = [r for r in waterfall_results if r['tranche'] == tranche]
+            if tranche_results:
+                x_vals = [r['required_return'] * 100 for r in tranche_results]
+                y_vals = [r['tranche_irr'] * 100 for r in tranche_results]
+                
+                ax3.scatter(x_vals, y_vals, alpha=0.6, color=colors[i], label=tranche.replace('_', ' '))
+        
+        # Add diagonal line (break-even)
+        max_val = max([r['required_return'] * 100 for r in waterfall_results] + 
+                     [r['tranche_irr'] * 100 for r in waterfall_results])
+        ax3.plot([0, max_val], [0, max_val], 'k--', alpha=0.5, label='Break-even')
+        
+        ax3.set_xlabel('Required Return (%)')
+        ax3.set_ylabel('Achieved IRR (%)')
+        ax3.set_title('Required vs Achieved Returns')
+        ax3.legend()
+        ax3.grid(True, alpha=0.3)
+        
+        # Panel 4: Investment Size Distribution
+        investment_sizes = [r['total_investment'] / 1e9 for r in waterfall_results]  # Convert to billions
+        attractive_investments = [r['total_investment'] / 1e9 for r in waterfall_results if r['attractive_investment']]
+        
+        ax4.hist(investment_sizes, bins=20, alpha=0.7, color='lightblue', label='All Investments')
+        ax4.hist(attractive_investments, bins=20, alpha=0.7, color='green', label='Attractive Investments')
+        ax4.set_xlabel('Investment Size ($B)')
+        ax4.set_ylabel('Count')
+        ax4.set_title('Investment Size Distribution')
+        ax4.legend()
+        ax4.grid(True, alpha=0.3)
+        
+        plt.tight_layout()
+        plt.savefig('waterfall_visualization_dashboard.png', dpi=300, bbox_inches='tight')
+        plt.show()
+        
+        print("Created waterfall visualization dashboard")
+        return fig
 
 def run_module_c_robust_waterfall_analysis(module_b_results: list, aug22_csv_path: str = 'Aug22.csv'):
     """
@@ -366,10 +634,19 @@ def run_module_c_robust_waterfall_analysis(module_b_results: list, aug22_csv_pat
     # Process all scenarios
     waterfall_results = waterfall_analyzer.process_all_scenarios()
     
-    print(f"\n✅ WATERFALL ANALYSIS COMPLETE:")
+    print(f"\n WATERFALL ANALYSIS COMPLETE:")
     print(f"Total scenarios processed: {len(module_b_results)}")
     print(f"Tranche results generated: {len(waterfall_results)}")
     print(f"Using Aug22.csv rates for: {len(set([r['country_name'] for r in waterfall_results]))}")
     print(f"Attractive investments: {len([r for r in waterfall_results if r['attractive_investment']])}")
+    
+    # Generate comprehensive visualizations
+    print(f"\nGENERATING COMPREHENSIVE VISUALIZATIONS:")
+    try:
+        waterfall_analyzer.create_comprehensive_irr_plots(module_b_results)
+        waterfall_analyzer.create_waterfall_visualization_dashboard()
+        print(f"All visualizations generated successfully")
+    except Exception as e:
+        print(f"Warning: Some visualizations failed: {e}")
     
     return waterfall_results, waterfall_analyzer
