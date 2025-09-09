@@ -15,7 +15,7 @@ class EnhancedSimpleRevenueAnalyzer:
     using hierarchical extrapolation: Direct → Continental → Global
     """
     
-    def __init__(self, csv_path='renewable_energy_revenue_table_restructured_v9.csv', 
+    def __init__(self, csv_path='renewable_energy_revenue_table_restructured_v10.csv', 
                  data_directory='.', carbon_arbitrage_path='./carbon_arbitrage_code'):
         
         print("="*80)
@@ -127,8 +127,7 @@ class EnhancedSimpleRevenueAnalyzer:
             continent = continent_row['region'].iloc[0] if len(continent_row) > 0 else 'Unknown'
             
             stats = {
-                'country_name': country,
-                'country_iso2': iso2_code,  # Alpha-2 code as requested by Publius
+                'country_iso2': iso2_code,  # Primary key: ISO-2 code only (AR, BR, etc.)
                 'continent': continent,
                 'deal_count': len(country_data),
                 'weighted_avg_usd_mwh': np.average(
@@ -174,8 +173,10 @@ class EnhancedSimpleRevenueAnalyzer:
         extrapolated_stats = self.country_stats_df.copy()
         
         # Add all other developing countries using continental extrapolation
+        existing_iso2_codes = set(self.country_stats_df['country_iso2'].values)
         for country in self.developing_countries:
-            if country not in self.country_stats_df['country_name'].values:
+            iso2_code = self.country_to_iso2.get(country, 'XX')
+            if iso2_code not in existing_iso2_codes:
                 
                 # Get country metadata
                 iso2_code = self.country_to_iso2.get(country, 'XX')
@@ -188,15 +189,14 @@ class EnhancedSimpleRevenueAnalyzer:
                     data_source = 'continental'
                     source_countries = list(self.country_stats_df[
                         self.country_stats_df['continent'] == continent
-                    ]['country_name'])
+                    ]['country_iso2'])
                 else:
                     pricing = global_avg
                     data_source = 'global'
-                    source_countries = list(self.country_stats_df['country_name'])
+                    source_countries = list(self.country_stats_df['country_iso2'])
                 
                 extrapolated_country = {
-                    'country_name': country,
-                    'country_iso2': iso2_code,  # Alpha-2 as requested
+                    'country_iso2': iso2_code,  # Primary key: ISO-2 code only
                     'continent': continent,
                     'deal_count': 0,  # No direct deals
                     'weighted_avg_usd_mwh': pricing['weighted_avg_usd_mwh'],
@@ -226,7 +226,7 @@ class SimpleRevenueAnalyzer:
     Kept for backward compatibility and comparison
     """
     
-    def __init__(self, csv_path='renewable_energy_revenue_table_restructured_v9.csv'):
+    def __init__(self, csv_path='renewable_energy_revenue_table_restructured_v10.csv'):
         print("="*80)
         print("SIMPLE REVENUE ANALYZER - RAW DEALS ONLY")
         print("="*80)

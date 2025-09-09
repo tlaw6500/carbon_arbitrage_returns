@@ -63,13 +63,15 @@ class ProjectIRRCalculator:
         irr_results = []
         
         for result in self.module_a_results:
-            # Extract data using actual key names from Module A
-            country_name = result['country_name']  # Fixed: was trying 'country'
+            # Extract data using ISO-2 as primary identifier
+            country_iso2 = result.get('country_iso2', result.get('country_name', ''))  # Fallback for transition
             pricing_method = result['pricing_methodology']
             fund_type = result['fund_type']
             
-            # Get country code - use alpha-2 as requested by Publius
-            country_code = self.country_codes.get(country_name, 'XX')
+            # Use ISO-2 directly - no conversion needed
+            if not country_iso2:
+                print(f"Warning: No country ISO-2 code found for result: {result}")
+                continue
             
             # Get financial data
             cash_flows = result.get('annual_cash_flows', [])
@@ -81,8 +83,7 @@ class ProjectIRRCalculator:
             
             # Create result record
             irr_result = {
-                'country_name': country_name,
-                'country_code': country_code,  # Alpha-2 code as asked
+                'country_iso2': country_iso2,  # Use ISO-2 as primary identifier
                 'fund_type': fund_type,
                 'pricing_methodology': pricing_method,
                 'project_irr': irr_calculation['irr'],

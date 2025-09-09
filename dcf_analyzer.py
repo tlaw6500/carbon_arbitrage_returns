@@ -113,7 +113,7 @@ class OpportunityCostIntegrator:
             return ""
 
 def add_opportunity_costs_to_dcf_cash_flows(annual_cash_flows: List[float], 
-                                          country_name: str,
+                                          country_iso2: str,
                                           start_year: int = 2025,
                                           integrator: OpportunityCostIntegrator = None) -> Tuple[List[float], List[float]]:
     """
@@ -121,7 +121,7 @@ def add_opportunity_costs_to_dcf_cash_flows(annual_cash_flows: List[float],
     
     Args:
         annual_cash_flows: Original renewable energy cash flows
-        country_name: Name of country (e.g., 'Argentina')
+        country_iso2: ISO-2 country code (e.g., 'AR' for Argentina)
         start_year: Year the project starts (default 2025)
         integrator: OpportunityCostIntegrator instance
         
@@ -131,9 +131,7 @@ def add_opportunity_costs_to_dcf_cash_flows(annual_cash_flows: List[float],
     if integrator is None:
         integrator = OpportunityCostIntegrator()
         
-    # Get country ISO2 code
-    country_iso2 = integrator.get_country_iso2_from_name(country_name)
-    
+    # Validate ISO-2 code
     if not country_iso2:
         # No opportunity cost data available
         return annual_cash_flows, [0.0] * len(annual_cash_flows)
@@ -169,9 +167,9 @@ class RenewableEnergyDCFV9:
     DCF/NPV Analysis for renewable energy projects with opportunity cost integration
     """
     
-    def __init__(self, country_name, pricing_methodology='weighted_avg', 
+    def __init__(self, country_iso2, pricing_methodology='weighted_avg', 
                  initial_investment=1e9, project_lifetime=25, discount_rate=0.08):
-        self.country_name = country_name
+        self.country_iso2 = country_iso2  # Use ISO-2 code as primary identifier
         self.pricing_methodology = pricing_methodology
         self.initial_investment = initial_investment
         self.project_lifetime = project_lifetime
@@ -187,18 +185,18 @@ class RenewableEnergyDCFV9:
             self.revenue_factors = pd.read_csv('revenue_analysis_continental_extrapolation_v12.csv')
             print(f"Loaded revenue factors for {len(self.revenue_factors)} countries")
             
-            # Filter for this country using alpha-2 stable approach
+            # Filter for this country using ISO-2 code
             country_revenue_data = self.revenue_factors[
-                (self.revenue_factors['country_name'] == self.country_name)
+                (self.revenue_factors['country_iso2'] == self.country_iso2)
             ]
             
             if country_revenue_data.empty:
-                print(f"Warning: No revenue data found for {self.country_name}")
+                print(f"Warning: No revenue data found for {self.country_iso2}")
                 self.base_revenue_per_mwh = 50.0  # Default fallback
             else:
                 # Use weighted average pricing as base
                 self.base_revenue_per_mwh = country_revenue_data.iloc[0]['weighted_avg_usd_mwh']
-                print(f"Loaded revenue factor for {self.country_name}: ${self.base_revenue_per_mwh:.2f}/MWh")
+                print(f"Loaded revenue factor for {self.country_iso2}: ${self.base_revenue_per_mwh:.2f}/MWh")
                 
         except Exception as e:
             print(f"Error loading supporting data: {e}")
@@ -234,13 +232,13 @@ class RenewableEnergyDCFV9:
                 if integrator:
                     enhanced_cash_flows, opp_costs = add_opportunity_costs_to_dcf_cash_flows(
                         annual_cash_flows, 
-                        self.country_name, 
+                        self.country_iso2,  # Pass ISO-2 code directly
                         2025,  # Start year
                         integrator
                     )
                     
                     total_opp_value = sum(opp_costs)
-                    print(f"  Applied opportunity costs for {self.country_name}: ${total_opp_value:,.0f}")
+                    print(f"  Applied opportunity costs for {self.country_iso2}: ${total_opp_value:,.0f}")
                 else:
                     enhanced_cash_flows = annual_cash_flows
                     opp_costs = [0.0] * len(annual_cash_flows)
@@ -252,7 +250,7 @@ class RenewableEnergyDCFV9:
                 irr = self._calculate_irr(enhanced_cash_flows)
                 
                 result = {
-                    'country_name': self.country_name,
+                    'country_iso2': self.country_iso2,  # Use ISO-2 as primary identifier
                     'fund_type': fund_name,
                     'fund_description': config['description'],
                     'pricing_methodology': self.pricing_methodology,
@@ -268,7 +266,7 @@ class RenewableEnergyDCFV9:
                 results.append(result)
                 
             except Exception as e:
-                print(f"Error calculating {fund_name} for {self.country_name}: {e}")
+                print(f"Error calculating {fund_name} for {self.country_iso2}: {e}")
                 continue
         
         return results

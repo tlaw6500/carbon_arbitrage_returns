@@ -10,13 +10,13 @@ from typing import Dict, List, Tuple
 
 class WaterfallAnalyzer:
     
-    def __init__(self, module_b_results: list, aug22_csv_path: str = 'Aug22.csv'):
-        """Initialize with Module B results and Aug22.csv ONLY"""
+    def __init__(self, module_b_results: list, aug22_csv_path: str = 'v2_Aug22.csv'):
+        """Initialize with Module B results and v2_Aug22.csv with Country_ISO2 ONLY"""
         
         self.module_b_results = module_b_results
         self.aug22_csv_path = aug22_csv_path
         
-        # Load required returns from Aug22.csv - NO DEFAULTS
+        # Load required returns from v2_Aug22.csv - NO DEFAULTS
         self.required_returns_df = self._load_required_returns()
         
         if self.required_returns_df.empty:
@@ -29,24 +29,27 @@ class WaterfallAnalyzer:
             'Equity': 0.25
         }
         
-        print(f"Initialized Waterfall Analyzer with Aug22.csv data for {len(self.required_returns_df)} countries")
-        print("Using ONLY country-specific rates")
+        print(f"Initialized Waterfall Analyzer with v2_Aug22.csv data for {len(self.required_returns_df)} countries")
+        print("Using ONLY country-specific rates with ISO-2 codes")
     
     def _load_required_returns(self) -> pd.DataFrame:
-        """Load required returns from Aug22.csv"""
+        """Load required returns from v2_Aug22.csv with Country_ISO2 support"""
         try:
-            # Load with multiple encoding attempts
-            for encoding in ['utf-8', 'latin-1', 'cp1252']:
+            # Load with multiple encoding attempts, handling BOM
+            for encoding in ['utf-8-sig', 'utf-8', 'latin-1', 'cp1252']:
                 try:
                     df = pd.read_csv(self.aug22_csv_path, encoding=encoding)
-                    print(f" Loaded Aug22.csv: {len(df)} countries using {encoding}")
+                    print(f" Loaded v2_Aug22.csv: {len(df)} countries using {encoding}")
                     
-                    # Verify required columns exist
-                    required_cols = ['Country', 'new_woinf_sen_debt', 'new_woinf_sub_debt', 'new_woinf_equity']
+                    # Strip any BOM characters from column names
+                    df.columns = df.columns.str.strip().str.replace('\ufeff', '')
+                    
+                    # Verify required columns exist including Country_ISO2
+                    required_cols = ['Country', 'Country_ISO2', 'new_woinf_sen_debt', 'new_woinf_sub_debt', 'new_woinf_equity']
                     missing_cols = [col for col in required_cols if col not in df.columns]
                     
                     if missing_cols:
-                        print(f" Missing columns in Aug22.csv: {missing_cols}")
+                        print(f" Missing columns in v2_Aug22.csv: {missing_cols}")
                         print(f"Available columns: {list(df.columns)}")
                         return pd.DataFrame()
                     
@@ -83,37 +86,44 @@ class WaterfallAnalyzer:
         except (ValueError, TypeError):
             raise ValueError(f"Invalid rate in Aug22.csv: {value}")
     
-    def _get_required_returns(self, country_name: str) -> Dict[str, float]:
+    def _get_required_returns(self, country_identifier: str) -> Dict[str, float]:
         """
-        Get required returns for country from Aug22.csv ONLY
+        Get required returns from v2_Aug22.csv using Country_ISO2 or country name
         Uses proper columns: new_woinf_sen_debt, new_woinf_sub_debt, new_woinf_equity
         """
         
         if self.required_returns_df.empty:
-            raise ValueError("Aug22.csv data not available - cannot proceed without professor's rates")
+            raise ValueError("v2_Aug22.csv data not available - cannot proceed without professor's rates")
         
-        # Find exact country match in Aug22.csv
+        # Find match using ISO-2 code first (preferred), then country name
         country_data = None
         for _, row in self.required_returns_df.iterrows():
-            if pd.isna(row.get('Country', '')):
+            # Skip rows with missing data
+            if pd.isna(row.get('Country', '')) or pd.isna(row.get('Country_ISO2', '')):
                 continue
             
             csv_country = str(row['Country']).strip()
-            input_country = str(country_name).strip()
+            csv_iso2 = str(row['Country_ISO2']).strip()
+            input_identifier = str(country_identifier).strip()
             
-            # Exact match first
-            if csv_country.lower() == input_country.lower():
+            # Check ISO-2 code match first (more stable)
+            if csv_iso2.upper() == input_identifier.upper():
                 country_data = row
                 break
             
-            # Partial match as fallback
-            if (input_country.lower() in csv_country.lower() or 
-                csv_country.lower() in input_country.lower()):
+            # Check country name exact match
+            if csv_country.lower() == input_identifier.lower():
+                country_data = row
+                break
+            
+            # Partial match as fallback for country names
+            if (input_identifier.lower() in csv_country.lower() or 
+                csv_country.lower() in input_identifier.lower()):
                 country_data = row
                 break
         
         if country_data is None:
-            raise ValueError(f"Country '{country_name}' not found in Aug22.csv - professor requires complete coverage")
+            raise ValueError(f"Country '{country_identifier}' not found in v2_Aug22.csv - professor requires complete coverage")
         
         # Parse required returns using CORRECT column names
         try:
@@ -123,11 +133,12 @@ class WaterfallAnalyzer:
                 'Equity': self._parse_percentage_safely(country_data['new_woinf_equity'])
             }
             
-            print(f"✅ {country_name}: Senior={returns['Senior_Debt']*100:.2f}%, Sub={returns['Sub_Debt']*100:.2f}%, Equity={returns['Equity']*100:.2f}%")
+            country_display = f"{country_data['Country']} ({country_data['Country_ISO2']})"
+            print(f"✅ {country_display}: Senior={returns['Senior_Debt']*100:.2f}%, Sub={returns['Sub_Debt']*100:.2f}%, Equity={returns['Equity']*100:.2f}%")
             return returns
             
         except Exception as e:
-            raise ValueError(f"Error parsing rates for {country_name}: {e}")
+            raise ValueError(f"Error parsing rates for {country_identifier}: {e}")
     
     def _calculate_tranche_investments(self, total_investment: float) -> Dict[str, float]:
         """Calculate investment amounts for each tranche"""
@@ -268,10 +279,15 @@ class WaterfallAnalyzer:
         print(f"Processing {len(self.module_b_results)} scenarios with Aug22.csv rates...")
         
         for scenario in self.module_b_results:
-            # Extract scenario data with robust field detection
-            country_name = scenario.get('country_name', '')
+            # Extract scenario data using ONLY ISO-2 codes
+            country_iso2 = scenario.get('country_iso2', scenario.get('country_code', ''))
             fund_type = scenario.get('fund_type', '')
             pricing_method = scenario.get('pricing_methodology', 'weighted_avg')
+            
+            # Validate ISO-2 code is present
+            if not country_iso2:
+                print(f"Skipping scenario: missing country ISO-2 code")
+                continue
             
             # Get financial data with multiple field name attempts
             annual_cash_flows = (scenario.get('annual_cash_flows') or 
@@ -291,23 +307,19 @@ class WaterfallAnalyzer:
                 project_irr = project_irr / 100.0
             
             # Validate essential data
-            if not country_name:
-                print(f" Skipping scenario: missing country name")
-                continue
-                
             if not annual_cash_flows or len(annual_cash_flows) == 0:
-                print(f" Skipping {country_name}: no cash flow data")
+                print(f" Skipping {country_iso2}: no cash flow data")
                 continue
                 
             if initial_investment <= 0:
-                print(f" Skipping {country_name}: invalid investment amount: {initial_investment}")
+                print(f" Skipping {country_iso2}: invalid investment amount: {initial_investment}")
                 continue
             
             try:
-                # Get required returns for this country from Aug22.csv
-                required_returns = self._get_required_returns(country_name)
+                # Get required returns for this country using ISO-2 code
+                required_returns = self._get_required_returns(country_iso2)
             except Exception as e:
-                print(f" Skipping {country_name}: {e}")
+                print(f" Skipping {country_iso2}: {e}")
                 continue
             
             # Calculate tranche investments
@@ -341,8 +353,7 @@ class WaterfallAnalyzer:
                 
                 result = {
                     'scenario_index': len(waterfall_results),
-                    'country_name': country_name,
-                    'country_code': scenario.get('country_code', 'XX'),
+                    'country_iso2': country_iso2,  # Use ISO-2 as primary identifier
                     'fund_type': fund_type,
                     'pricing_methodology': pricing_method,
                     'tranche': tranche,
